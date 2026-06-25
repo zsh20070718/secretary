@@ -1,30 +1,20 @@
 from __future__ import annotations
 
 import json
-import re
-import threading
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlparse
 
 from .config import Settings
 from .feishu import FeishuClient
-from .router import CommandContext, Router
-from .search import SearchClient
+from .message import (
+    IncomingMessage,
+    MessageProcessor,
+    parse_text_content,
+    strip_bot_mention,
+)
+from .router import Router
 from .store import Store
-
-
-_AT_RE = re.compile(r"^\s*(<at\b[^>]*>.*?</at>\s*)+", re.IGNORECASE)
-
-
-@dataclass(frozen=True)
-class IncomingMessage:
-    event_id: str
-    owner_id: str
-    receive_id_type: str
-    receive_id: str
-    text: str
 
 
 class SecretaryServer:
@@ -39,7 +29,7 @@ class SecretaryServer:
         self.store = store
         self.router = router
         self.feishu = feishu
-        self.search_client = SearchClient(settings)
+        self.processor = MessageProcessor(settings, store, router, feishu)
         handler = self._handler_class()
         self._server = ThreadingHTTPServer((settings.host, settings.port), handler)
 
@@ -48,6 +38,9 @@ class SecretaryServer:
 
     def shutdown(self) -> None:
         self._server.shutdown()
+
+    def close(self) -> None:
+        self._server.server_close()
 
     def _handler_class(self) -> type[BaseHTTPRequestHandler]:
         parent = self
@@ -119,15 +112,7 @@ class SecretaryServer:
         incoming = self._extract_message(body)
         if incoming is None:
             return 200, {"code": 0}
-        if not self.store.mark_event_seen(incoming.event_id):
-            return 200, {"code": 0, "msg": "duplicate ignored"}
-
-        threading.Thread(
-            target=self._process_message,
-            args=(incoming,),
-            name=f"feishu-event-{incoming.event_id or 'unknown'}",
-            daemon=True,
-        ).start()
+        self.processor.process_async(incoming)
         return 200, {"code": 0}
 
     def _verify_token(self, body: dict[str, Any]) -> None:
@@ -158,7 +143,7 @@ class SecretaryServer:
             message = event.get("message") or {}
             if message.get("message_type") != "text":
                 return None
-            text = self._parse_text_content(message.get("content", ""))
+            text = parse_text_content(message.get("content", ""))
             if not text:
                 return None
             chat_type = message.get("chat_type") or ""
@@ -174,7 +159,7 @@ class SecretaryServer:
                 owner_id=owner_id,
                 receive_id_type=receive_id_type,
                 receive_id=receive_id,
-                text=self._strip_bot_mention(text),
+                text=strip_bot_mention(text),
             )
 
         if body.get("type") == "event_callback" and event.get("type") == "message":
@@ -188,43 +173,7 @@ class SecretaryServer:
                 owner_id=owner_id,
                 receive_id_type=receive_id_type,
                 receive_id=receive_id,
-                text=self._strip_bot_mention(text),
+                text=strip_bot_mention(text),
             )
 
         return None
-
-    @staticmethod
-    def _parse_text_content(content: str) -> str:
-        if not content:
-            return ""
-        if isinstance(content, str):
-            try:
-                data = json.loads(content)
-            except json.JSONDecodeError:
-                return content.strip()
-        else:
-            data = content
-        return str(data.get("text") or "").strip()
-
-    @staticmethod
-    def _strip_bot_mention(text: str) -> str:
-        return _AT_RE.sub("", text).strip()
-
-    def _process_message(self, incoming: IncomingMessage) -> None:
-        ctx = CommandContext(
-            owner_id=incoming.owner_id,
-            receive_id_type=incoming.receive_id_type,
-            receive_id=incoming.receive_id,
-            raw_text=incoming.text,
-            store=self.store,
-            settings=self.settings,
-            search_client=self.search_client,
-        )
-        reply = self.router.dispatch(ctx, incoming.text)
-        if not reply:
-            return
-        try:
-            self.feishu.send_text(incoming.receive_id_type, incoming.receive_id, reply)
-        except Exception as exc:
-            print(f"Failed to send Feishu reply: {exc}")
-

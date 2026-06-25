@@ -9,10 +9,14 @@ import urllib.request
 from typing import Any
 
 from .config import Settings
+from .logging_utils import get_logger
 
 
 class FeishuError(RuntimeError):
     pass
+
+
+logger = get_logger(__name__)
 
 
 class FeishuClient:
@@ -23,6 +27,11 @@ class FeishuClient:
         self._lock = threading.RLock()
 
     def send_text(self, receive_id_type: str, receive_id: str, text: str) -> None:
+        logger.info(
+            "Sending Feishu text receive_id_type=%s text_length=%s",
+            receive_id_type,
+            len(text),
+        )
         if receive_id_type == "webhook":
             self._send_webhook(text)
             return
@@ -49,6 +58,7 @@ class FeishuClient:
             body,
             headers={"Authorization": f"Bearer {token}"},
         )
+        logger.info("Feishu text sent receive_id_type=%s", receive_id_type)
 
     def _send_webhook(self, text: str) -> None:
         if not self.settings.feishu_webhook_url:
@@ -86,6 +96,7 @@ class FeishuClient:
             expire = int(data.get("expire", 7200))
             self._token = token
             self._token_expires_at = now + max(expire - 120, 60)
+            logger.info("Refreshed Feishu tenant access token expires_in=%s", expire)
             return token
 
     def _json_request(
@@ -119,4 +130,3 @@ class FeishuClient:
         if require_code_zero and data.get("code", 0) != 0:
             raise FeishuError(f"Feishu API returned error: {data}")
         return data
-

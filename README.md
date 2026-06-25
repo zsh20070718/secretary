@@ -1,53 +1,82 @@
 # Personal Secretary
 
-一个轻量的本地个人秘书服务，通过飞书自建应用接收你的消息，支持 UTC 日程提醒、待办、备忘和资料搜索。
+一个轻量的本地个人秘书服务。默认用飞书长连接模式运行：你的笔记本主动连接飞书开放平台，因此不需要公网域名，也不需要把本机端口暴露到公网。
 
-## 特点
+## 当前能力
 
-- 纯 Python 标准库为主，无运行时依赖，资源占用小。
-- 本地 SQLite 存储，默认数据库在 `data/secretary.sqlite3`。
-- 所有日程时间都以 UTC ISO 8601 格式保存，例如 `2026-06-25T06:30:00Z`。
-- 命令模块自动注册，新增功能只需要在 `secretary/commands/` 下添加一个模块。
-- 飞书事件入口支持 URL 验证和 `im.message.receive_v1` 文本消息事件。
+- 飞书长连接收消息，适合本机常驻运行。
+- 保留 webhook 模式，未来有公网 HTTPS 地址时可切换。
+- UTC 日程提醒，支持绝对时间和 `in 10m` 这类相对时间。
+- 本地 SQLite 存储待办、备忘和提醒。
+- 资料搜索，默认 DuckDuckGo Instant Answer，可配置 Bing Search API。
+- 命令模块自动注册，新增功能只需要在 `secretary/commands/` 下添加文件。
 
-## 快速启动
-
-1. 复制配置：
+## 安装
 
 ```powershell
+python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-2. 编辑 `.env`，填写飞书自建应用信息：
+编辑 `.env`：
 
 ```env
+SECRETARY_FEISHU_EVENT_MODE=long_connection
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=xxx
 FEISHU_VERIFICATION_TOKEN=xxx
 ```
 
-3. 启动服务：
+启动：
 
 ```powershell
 python -m secretary
 ```
 
-4. 暴露本地端口给飞书访问。开发阶段可以用 ngrok、cloudflared 或内网穿透工具，把公网 HTTPS 地址指向本地 `8080` 端口。
+启动后保持这个终端开着。你在飞书里给机器人发消息，本机进程会通过长连接收到事件并回复。
 
-5. 在飞书开放平台配置事件订阅：
+## 飞书后台配置
 
-- 请求地址：`https://你的公网域名/feishu/events`
-- 事件：`im.message.receive_v1`
-- 消息权限：给应用开启接收消息、发送消息相关权限，并发布/安装应用。
-- 加密策略：当前版本先不要启用事件加密。
+你需要在飞书开放平台创建一个企业自建应用，并完成这些配置：
 
-## 可用命令
+- 应用能力：开启机器人。
+- 事件订阅：选择“使用长连接接收事件”，订阅 `im.message.receive_v1`。
+- 权限：开启接收消息、以机器人身份发送消息相关权限。
+- 发布/安装：把应用发布并安装到你的企业或个人测试租户。
+- 可用范围：确保机器人对你本人或目标群可见。
 
-在飞书里给机器人发送：
+配置完成后，在飞书里给机器人发送：
 
 ```text
 /help
 ```
+
+如果本机终端正在运行，秘书应该回复可用命令列表。
+
+## 可用命令
+
+Codex TUI：
+
+```text
+/whoami
+/c 帮我想一下这个项目下一步怎么做
+/codex status
+/codex capture
+/codex interrupt
+/codex reset
+/codex stop
+```
+
+`/c` 和 `/codex` 会控制服务器上的长期 Codex TUI。为了安全，必须先配置：
+
+```env
+SECRETARY_ALLOWED_OPEN_IDS=你的 open_id
+CODEX_TUI_COMMAND=codex
+CODEX_TUI_WORKDIR=/srv/secretary/codex-workspace
+CODEX_TUI_TMUX_SESSION=secretary-codex
+```
+
+如果不知道自己的 `open_id`，先给机器人发送 `/whoami`。
 
 日程提醒：
 
@@ -80,6 +109,42 @@ python -m secretary
 /search Python sqlite WAL mode
 ```
 
+## Webhook 备用模式
+
+如果以后你有公网 HTTPS 地址，或者想用 ngrok/cloudflared 做临时调试，可以切到 webhook：
+
+```env
+SECRETARY_FEISHU_EVENT_MODE=webhook
+SECRETARY_HOST=0.0.0.0
+SECRETARY_PORT=8080
+```
+
+然后在飞书事件订阅里配置：
+
+```text
+https://你的公网地址/feishu/events
+```
+
+当前 webhook 模式不支持事件加密；如需使用加密事件，后续可以加。
+
+## 服务器上跑长期 Codex
+
+Linux 服务器需要有 `tmux` 和 Codex CLI。推荐用单独用户运行秘书，不要用 root。最小启动方式：
+
+```bash
+cd /srv/secretary
+python3 -m pip install -r requirements.txt
+python3 -m secretary
+```
+
+秘书会在第一次收到 `/c ...` 时自动创建 tmux session，并在其中启动 Codex TUI。也可以手动查看：
+
+```bash
+tmux attach -t secretary-codex
+```
+
+公网只需要飞书能连接到你的 bot；Codex TUI 不需要、也不应该暴露任何公网端口。
+
 ## 扩展新功能
 
 在 `secretary/commands/` 下新增一个文件，例如 `weather.py`：
@@ -110,11 +175,12 @@ def register(router):
 - 推荐输入带时区的 ISO 8601 时间，例如 `2026-06-25T14:30:00+08:00`。
 - 如果输入没有时区，例如 `2026-06-25T14:30:00`，会按 `SECRETARY_DEFAULT_TIMEZONE` 解释，再转换为 UTC。
 
-## 健康检查
+## 本地健康检查
+
+健康检查只在 webhook 模式下开启：
 
 ```powershell
 curl http://127.0.0.1:8080/health
 ```
 
-返回 `ok` 表示服务正常。
-
+返回 `ok` 表示 HTTP 服务正常。
