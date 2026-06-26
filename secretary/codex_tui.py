@@ -229,27 +229,27 @@ class CodexTuiBridge:
         self._run(["tmux", "send-keys", "-t", self.config.session, "Enter"], check=True)
 
     def _wait_for_response(self, before: str, submitted_text: str) -> str:
-        deadline = time.monotonic() + self.config.response_timeout_seconds
         stable_since: float | None = None
         last = before
-        changed = ""
         response = ""
-        while time.monotonic() < deadline:
+        while True:
             time.sleep(1)
             current = self.capture()
             if current != last:
-                changed = current
                 last = current
                 if extract_delta_capture(before, current, submitted_text=submitted_text):
                     response = current
-                    stable_since = time.monotonic()
+                    stable_since = time.monotonic() if is_tui_idle(current) else None
                 else:
                     stable_since = None
                 continue
-            if response and stable_since is not None:
+            if response and is_tui_idle(current):
+                if stable_since is None:
+                    stable_since = time.monotonic()
                 if time.monotonic() - stable_since >= self.config.stable_seconds:
                     return response
-        return response or changed
+            else:
+                stable_since = None
 
     def _format_capture(self, text: str) -> str:
         cleaned = text.strip()
@@ -321,6 +321,18 @@ def extract_delta_capture(
     if start is None:
         return after_clean
     return ""
+
+
+def is_tui_idle(text: str) -> bool:
+    lines = [line.strip() for line in clean_terminal_text(text).splitlines() if line.strip()]
+    while lines and _CODEX_STATUS_RE.match(lines[-1]):
+        lines.pop()
+    if not lines:
+        return False
+    prompt = lines[-1]
+    if not prompt.startswith(_PROMPT_MARK):
+        return False
+    return "esc to interrupt" not in prompt.lower()
 
 
 def _find_delta_start(before_lines: list[str], after_lines: list[str]) -> int | None:

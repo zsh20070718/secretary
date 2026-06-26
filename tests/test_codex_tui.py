@@ -10,6 +10,7 @@ from secretary.codex_tui import (
     CodexTuiConfig,
     clean_terminal_text,
     extract_delta_capture,
+    is_tui_idle,
 )
 
 
@@ -113,6 +114,20 @@ class CodexTuiTest(unittest.TestCase):
     def test_extract_delta_capture_falls_back_when_no_overlap_exists(self) -> None:
         self.assertEqual(extract_delta_capture("unrelated", "fresh answer"), "fresh answer")
 
+    def test_is_tui_idle_detects_ready_prompt(self) -> None:
+        capture = (
+            "answer\n\n"
+            "\u203a Write tests for @filename\n\n"
+            "  gpt-5.5 xhigh \u00b7 ~/secretary/codex-workspace"
+        )
+
+        self.assertTrue(is_tui_idle(capture))
+
+    def test_is_tui_idle_rejects_running_status(self) -> None:
+        capture = "answer\n\n\u2022 Creating a todo list (30s \u2022 esc to interrupt)"
+
+        self.assertFalse(is_tui_idle(capture))
+
     def test_wait_for_response_does_not_return_prompt_echo(self) -> None:
         before = "old answer\n  gpt-5.5 xhigh \u00b7 ~/secretary/codex-workspace"
         prompt_only = (
@@ -121,7 +136,12 @@ class CodexTuiTest(unittest.TestCase):
             + "\u203a [Feishu secretary bridge] owner_id=ou_test; User message: ping\n"
             + "\u203a Write tests for @filename"
         )
-        answered = prompt_only + "\n\nnew answer"
+        answered = (
+            prompt_only
+            + "\n\nnew answer\n\n"
+            + "\u203a Write tests for @filename\n"
+            + "  gpt-5.5 xhigh \u00b7 ~/secretary/codex-workspace"
+        )
         bridge = _FakeCaptureBridge([prompt_only, prompt_only, answered, answered])
 
         with patch("secretary.codex_tui.time.sleep", lambda _: None):

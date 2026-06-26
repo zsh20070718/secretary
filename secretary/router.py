@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .feishu import FeishuClient
     from .config import Settings
     from .search import SearchClient
     from .store import Store
@@ -21,6 +22,7 @@ class CommandContext:
     store: "Store"
     settings: "Settings"
     search_client: "SearchClient"
+    feishu: "FeishuClient | None" = None
     router: "Router | None" = None
 
 
@@ -80,4 +82,3 @@ class Router:
     @staticmethod
     def _normalize_name(name: str) -> str:
         return name.strip().lstrip("/").lower()
-

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import threading
+
 from secretary.codex_tui import CodexTuiBridge, CodexTuiError
+from secretary.logging_utils import get_logger
 from secretary.router import CommandSpec
+
+
+logger = get_logger(__name__)
+WORKING_REPLY = "\u6b63\u5728\u505a"
+_CODEX_TASK_LOCK = threading.Lock()
 
 
 def handle_codex_short(ctx, args: str) -> str:
@@ -31,10 +39,42 @@ def _send_to_codex(ctx, message: str) -> str:
     _require_allowed(ctx)
     if not message.strip():
         raise ValueError("send a message, for example /c help me think")
+    if not _CODEX_TASK_LOCK.acquire(blocking=False):
+        return WORKING_REPLY
+    if ctx.feishu is None:
+        try:
+            return _bridge(ctx).send_message_and_capture(_with_bridge_context(ctx, message))
+        finally:
+            _CODEX_TASK_LOCK.release()
+
+    thread = threading.Thread(
+        target=_send_to_codex_worker,
+        args=(ctx, message),
+        name="codex-tui-worker",
+        daemon=True,
+    )
     try:
-        return _bridge(ctx).send_message_and_capture(_with_bridge_context(ctx, message))
+        thread.start()
+    except Exception:
+        _CODEX_TASK_LOCK.release()
+        raise
+    return WORKING_REPLY
+
+
+def _send_to_codex_worker(ctx, message: str) -> None:
+    try:
+        reply = _bridge(ctx).send_message_and_capture(_with_bridge_context(ctx, message))
     except CodexTuiError as exc:
-        return f"Codex TUI error: {exc}"
+        reply = f"Codex TUI error: {exc}"
+    except Exception as exc:
+        logger.exception("Unexpected Codex worker failure: %s", exc)
+        reply = f"Codex worker error: {exc}"
+    try:
+        ctx.feishu.send_text(ctx.receive_id_type, ctx.receive_id, reply)
+    except Exception as exc:
+        logger.exception("Failed to send Codex worker reply: %s", exc)
+    finally:
+        _CODEX_TASK_LOCK.release()
 
 
 def _run_bridge(ctx, action):

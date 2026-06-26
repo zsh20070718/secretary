@@ -86,6 +86,7 @@ class MessageProcessor:
             store=self.store,
             settings=self.settings,
             search_client=self.search_client,
+            feishu=self.feishu,
         )
         reply = self.router.dispatch(ctx, incoming.text)
         if not reply:
